@@ -1,0 +1,216 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ZOD Download Manager</title>
+<link rel="icon" type="image/png" href="/logo.png">
+<style>
+*{box-sizing:border-box}
+body{margin:0;font:14px/1.45 "Segoe UI",system-ui,sans-serif;background:#100020;color:#fff;display:flex;height:100vh}
+nav{width:190px;flex:none;background:#1a0d2e;padding:12px 10px;display:flex;flex-direction:column;gap:1px;overflow-y:auto}
+.logo{width:64px;height:64px;flex:none;border-radius:14px;margin:0 8px 4px}
+h1{font-size:24px;margin:0 8px;background:linear-gradient(90deg,#803cff,#f0448b);-webkit-background-clip:text;color:transparent}
+nav small{color:#b9afc7;margin:0 8px 16px}
+button{font:inherit;color:#fff;background:#2a1a45;border:1px solid #3d2a60;border-radius:7px;padding:6px 12px;cursor:pointer}
+button:hover:not(:disabled){border-color:#803cff}button:disabled{opacity:.4;cursor:default}
+button:focus-visible,input:focus-visible,textarea:focus-visible{outline:2px solid #f0448b}
+.primary{background:linear-gradient(90deg,#803cff,#f0448b);border:0}
+nav button{flex:none;padding:4px 12px;background:none;border:0;text-align:left;color:#b9afc7;display:flex;justify-content:space-between}
+nav button.on{background:#2a1a45;color:#fff}
+nav .end{margin-top:auto}
+main{flex:1;display:flex;flex-direction:column;min-width:0}
+header{display:flex;flex-wrap:wrap;gap:7px;padding:12px;border-bottom:1px solid #2a1a45}
+input,textarea,select{font:inherit;color:#fff;background:#100020;border:1px solid #3d2a60;border-radius:7px;padding:6px 9px;width:100%}
+header input{width:200px;margin-left:auto}
+#list{overflow:auto;flex:1;padding:12px}
+.item{background:#1a0d2e;border:1px solid #2a1a45;border-radius:10px;padding:10px 13px;margin-bottom:8px;cursor:pointer}
+.item.sel{border-color:#803cff;background:#231240}
+.row{display:flex;gap:12px;justify-content:space-between}
+.name{font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.dim{color:#b9afc7;font-size:12px;overflow-wrap:anywhere}.err{color:#ff8fb8;font-size:12px}
+.bar{height:6px;background:#100020;border-radius:3px;margin:7px 0;overflow:hidden}
+.bar i{display:block;height:100%;background:linear-gradient(90deg,#803cff,#f0448b)}
+footer{padding:7px 14px;color:#b9afc7;border-top:1px solid #2a1a45;font-size:12px}
+.empty{text-align:center;color:#b9afc7;margin-top:80px}
+dialog{background:#1a0d2e;color:#fff;border:1px solid #3d2a60;border-radius:12px;width:min(520px,92vw);padding:20px}
+dialog::backdrop{background:#0009}
+label{display:block;margin:10px 0;color:#b9afc7}
+.actions{display:flex;gap:8px;justify-content:flex-end;margin-top:14px}
+</style></head><body>
+<nav><img class="logo" src="/logo.png" alt="ZDM logo"><h1>ZDM</h1><small>ZOD Download Manager</small><div id="filters"></div>
+<button class="end" id="settingsBtn">Settings</button><button id="aboutBtn">About ZDM</button><button id="exitBtn">Exit ZDM</button></nav>
+<main>
+<header>
+<button class="primary" id="addBtn" title="Ctrl+N">Add URL</button>
+<button id="resumeBtn">Resume</button><button id="pauseBtn">Pause</button><button id="removeBtn" title="Delete key">Remove</button>
+<button id="openBtn">Open file</button><button id="folderBtn">Open folder</button>
+<button id="startAll">Start all</button><button id="pauseAll">Pause all</button>
+<input id="search" placeholder="Search" aria-label="Search">
+</header>
+<div id="list"></div><footer id="status">Connecting…</footer>
+</main>
+
+<dialog id="addDlg"><form method="dialog">
+<h3>Add download</h3>
+<label>Links, one per line<textarea name="urls" rows="4" required placeholder="https://…"></textarea></label>
+<label>Save to folder<input name="folder"></label>
+<label>File name (optional, single link only)<input name="name"></label>
+<label>Connections (1–32)<input name="connections" type="number" min="1" max="32"></label>
+<label>SHA-256 check (optional, single link only)<input name="sha256" pattern="[0-9a-fA-F]{64}"></label>
+<div class="err" id="addErr"></div>
+<div class="actions"><button type="button" data-close>Cancel</button><button class="primary">Download</button></div>
+</form></dialog>
+
+<dialog id="setDlg"><form method="dialog">
+<h3>Settings</h3>
+<label>Default folder<input name="folder" required></label>
+<label>Connections per download (1–32)<input name="connections" type="number" min="1" max="32" required></label>
+<label>Downloads at the same time (1–10)<input name="simultaneous" type="number" min="1" max="10" required></label>
+<label>Speed limit in KB/s (0 = unlimited)<input name="limit" type="number" min="0" required></label>
+<div class="err" id="setErr"></div>
+<div class="actions"><button type="button" data-close>Cancel</button><button class="primary">Save</button></div>
+</form></dialog>
+
+<dialog id="aboutDlg" style="text-align:center"><img class="logo" src="/logo.png" alt="ZDM logo" style="width:160px;height:160px">
+<h3>ZOD Download Manager</h3><div class="dim">ZDM version 0.3</div>
+<div class="actions"><button type="button" data-close class="primary">Close</button></div></dialog>
+
+<script>
+const token = location.hash.slice(1) || sessionStorage.zdm || "";
+if (token) { sessionStorage.zdm = token; history.replaceState(null, "", "/"); }
+const $ = s => document.querySelector(s);
+let items = [], settings = {}, filter = "All", selected = new Set(), stopped = false;
+
+const ext = n => (n.split(".").pop() || "").toLowerCase();
+const risky = "exe msi bat cmd ps1 scr vbs js jar com lnk reg hta wsf".split(" ");
+const types = {Programs:"exe msi apk dmg deb", Documents:"pdf doc docx xls xlsx ppt pptx txt epub",
+  Music:"mp3 wav flac aac m4a ogg", Videos:"mp4 mkv webm mov avi", Compressed:"zip rar 7z tar gz xz iso"};
+const category = i => Object.keys(types).find(k => types[k].split(" ").includes(ext(i.Name))) || "Other";
+const filters = ["All","Downloading","Queued","Paused","Completed","Failed",...Object.keys(types),"Other"];
+const matches = (i, f) => f === "All" || i.Status === f.toLowerCase() || category(i) === f;
+
+async function api(path, body = {}) {
+  const res = await fetch("/api/" + path, {method:"POST", headers:{"X-Token":token}, body:JSON.stringify(body)});
+  if (!res.ok) {
+    const text = await res.text();
+    let message = text; try { message = JSON.parse(text).error; } catch {}
+    throw new Error(message);
+  }
+  return res.json();
+}
+const act = (path, body) => api(path, body).then(refresh).catch(e => alert(e.message));
+
+function size(n) {
+  if (n < 0) return "?";
+  const u = ["B","KB","MB","GB","TB"]; let i = 0;
+  while (n >= 1024 && i < 4) { n /= 1024; i++; }
+  return n.toFixed(i ? 1 : 0) + " " + u[i];
+}
+const time = s => s < 60 ? Math.ceil(s) + " s" : s < 3600 ? Math.ceil(s/60) + " min" : (s/3600).toFixed(1) + " h";
+const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text !== undefined) e.textContent = text; return e; };
+
+function render() {
+  $("#filters").replaceChildren(...filters.map(f => {
+    const b = el("button", f === filter ? "on" : ""); b.style.width = "100%";
+    b.append(el("span", "", f), el("span", "", items.filter(i => matches(i, f)).length || ""));
+    b.onmousedown = () => { filter = f; selected.clear(); render(); };
+    return b;
+  }));
+  const q = $("#search").value.toLowerCase();
+  const shown = items.filter(i => matches(i, filter) && (i.Name + i.URL).toLowerCase().includes(q)).reverse();
+  const nodes = shown.map(i => {
+    const box = el("div", "item" + (selected.has(i.ID) ? " sel" : ""));
+    const pct = i.Status === "completed" ? 100 : i.Size > 0 ? i.Done / i.Size * 100 : 0;
+    const top = el("div", "row"); top.append(el("span", "name", i.Name || i.URL), el("span", "", i.Status));
+    const bar = el("div", "bar"), fill = el("i"); fill.style.width = pct + "%"; bar.append(fill);
+    let info = `${pct.toFixed(1)}%  ·  ${size(i.Done)} of ${size(i.Size)}`;
+    if (i.Status === "downloading") {
+      info += `  ·  ${size(i.Speed)}/s  ·  ${i.Connections} connections`;
+      if (i.Speed > 1 && i.Size > 0) info += `  ·  ${time((i.Size - i.Done) / i.Speed)} left`;
+    }
+    box.append(top, bar, el("div", "dim", info));
+    if (i.Error) box.append(el("div", "err", i.Error));
+    if (selected.has(i.ID)) box.append(el("div", "dim", `${i.URL}\n`), el("div", "dim", `${i.Folder}  ·  added ${i.Added}`));
+    box.onmousedown = e => {
+      if (e.ctrlKey || e.metaKey) selected.has(i.ID) ? selected.delete(i.ID) : selected.add(i.ID);
+      else selected = new Set([i.ID]);
+      render();
+    };
+    return box;
+  });
+  $("#list").replaceChildren(...(nodes.length ? nodes : [el("div", "empty", "No downloads here. Press “Add URL” to start one.")]));
+  const chosen = items.filter(i => selected.has(i.ID));
+  $("#resumeBtn").disabled = !chosen.some(i => i.Status === "paused" || i.Status === "failed");
+  $("#pauseBtn").disabled = !chosen.some(i => i.Status === "downloading" || i.Status === "queued");
+  $("#removeBtn").disabled = !chosen.length;
+  $("#openBtn").disabled = !(chosen.length === 1 && chosen[0].Status === "completed");
+  $("#folderBtn").disabled = chosen.length !== 1;
+  $("#status").textContent = `Total speed ${size(items.reduce((a, i) => a + i.Speed, 0))}/s  ·  ${items.length} downloads` +
+    (settings.LimitKB ? `  ·  limit ${settings.LimitKB} KB/s` : "") + "  ·  Ctrl+click selects several";
+}
+
+async function refresh() {
+  if (stopped) return;
+  try {
+    const s = await api("state");
+    items = s.items; settings = s.settings; render();
+  } catch { $("#status").textContent = "ZDM is not running. Start ZDM.exe again."; }
+}
+
+const ids = () => [...selected];
+$("#resumeBtn").onclick = () => act("resume", {ids: ids()});
+$("#pauseBtn").onclick = () => act("pause", {ids: ids()});
+$("#startAll").onclick = () => act("resume", {ids: items.map(i => i.ID)});
+$("#pauseAll").onclick = () => act("pause", {ids: items.map(i => i.ID)});
+$("#folderBtn").onclick = () => act("open", {ids: ids(), folder: "folder"});
+$("#openBtn").onclick = () => {
+  const i = items.find(i => selected.has(i.ID));
+  if (risky.includes(ext(i.Name)) && !confirm(`${i.Name} can run code on your computer.\nOpen it only if you trust where it came from. Open?`)) return;
+  act("open", {ids: ids()});
+};
+$("#removeBtn").onclick = () => {
+  if (!selected.size || !confirm("Remove the selected downloads from the list?\nPartial data of unfinished downloads is deleted.")) return;
+  const done = items.some(i => selected.has(i.ID) && i.Status === "completed");
+  const deleteFile = done && confirm("Also permanently delete the downloaded files from disk?\nCancel keeps the files.");
+  act("remove", {ids: ids(), deleteFile});
+};
+$("#addBtn").onclick = () => {
+  const f = $("#addDlg form"); f.reset(); f.elements.folder.value = settings.Folder; f.elements.connections.value = settings.Connections;
+  $("#addErr").textContent = ""; $("#addDlg").showModal();
+};
+$("#addDlg form").onsubmit = async e => {
+  e.preventDefault();
+  const v = e.target.elements;
+  try {
+    await api("add", {urls: v.urls.value, folder: v.folder.value, name: v.name.value, sha256: v.sha256.value, connections: +v.connections.value});
+    $("#addDlg").close(); filter = "All"; refresh();
+  } catch (err) { $("#addErr").textContent = err.message; }
+};
+$("#settingsBtn").onclick = () => {
+  const v = $("#setDlg form").elements;
+  v.folder.value = settings.Folder; v.connections.value = settings.Connections; v.simultaneous.value = settings.Simultaneous; v.limit.value = settings.LimitKB;
+  $("#setErr").textContent = ""; $("#setDlg").showModal();
+};
+$("#setDlg form").onsubmit = async e => {
+  e.preventDefault();
+  const v = e.target.elements;
+  try {
+    await api("settings", {settings: {folder: v.folder.value, connections: +v.connections.value, simultaneous: +v.simultaneous.value, limitKB: +v.limit.value}});
+    $("#setDlg").close(); refresh();
+  } catch (err) { $("#setErr").textContent = err.message; }
+};
+document.querySelectorAll("[data-close]").forEach(b => b.onclick = () => b.closest("dialog").close());
+$("#exitBtn").onclick = async () => {
+  if (!confirm("Exit ZDM? Active downloads stop and continue next time.")) return;
+  await api("exit"); stopped = true;
+  document.body.replaceChildren(el("div", "empty", "ZDM has closed. You can close this window."));
+  window.close();
+};
+$("#aboutBtn").onclick = () => $("#aboutDlg").showModal();
+$("#search").oninput = render;
+document.addEventListener("keydown", e => {
+  if (document.querySelector("dialog[open]")) return;
+  if (e.ctrlKey && e.key.toLowerCase() === "n") { e.preventDefault(); $("#addBtn").click(); }
+  if (e.key === "Delete" && e.target.tagName !== "INPUT") $("#removeBtn").click();
+});
+(async function loop() { await refresh(); if (!stopped) setTimeout(loop, 700); })();
+</script>
+</body></html>
